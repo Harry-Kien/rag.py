@@ -1,0 +1,112 @@
+import streamlit as st
+import os
+import shutil
+import faiss
+import numpy as np
+from langchain_community.document_loaders import PyPDFLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.vectorstores import Chroma
+from langchain.embeddings import HuggingFaceEmbeddings
+
+def get_embedding_function():
+    return HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+
+
+
+# Định nghĩa đường dẫn
+CHROMA_PATH = "chroma"
+DATA_PATH = "data"
+
+# Hàm lưu file tải lên
+def save_uploaded_file(uploaded_file):
+    if not os.path.exists(DATA_PATH):
+        os.makedirs(DATA_PATH)
+    file_path = os.path.join(DATA_PATH, uploaded_file.name)
+    with open(file_path, "wb") as f:
+        f.write(uploaded_file.getbuffer())
+    return file_path
+
+from langchain.docstore.document import Document
+
+def load_documents():
+    docs = []
+
+    # Đọc file TXT
+    txt_file_path = r"D:\RAG Advance\data\documents.txt"  # Đường dẫn tuyệt đối
+    if os.path.exists(txt_file_path):
+        with open(txt_file_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        docs.append(Document(page_content=content))
+
+    # Đọc tất cả các file PDF trong thư mục DATA_PATH
+    for file in os.listdir(DATA_PATH):
+        file_path = os.path.join(DATA_PATH, file)
+        if file.endswith(".pdf"):
+            loader = PyPDFLoader(file_path)
+            docs.extend(loader.load())  # Thêm nội dung PDF vào danh sách docs
+
+    return docs
+
+
+def split_documents(documents):
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=256,    # Kích thước vừa đủ để giữ ngữ cảnh
+        chunk_overlap=50   # Chồng lấn nhẹ để đảm bảo không mất thông tin
+    )
+    return text_splitter.split_documents(documents)
+
+
+def add_to_chroma(chunks):
+    db = Chroma(persist_directory=CHROMA_PATH, embedding_function=get_embedding_function())
+    db.add_documents(chunks)
+    db.persist()
+    return len(chunks)
+
+def search_with_faiss(query):
+    db = Chroma(persist_directory=CHROMA_PATH, embedding_function=get_embedding_function())
+    retriever = db.as_retriever(search_kwargs={"k": 2})
+    results = retriever.get_relevant_documents(query)
+    best_match = results[0].page_content if results else "Không tìm thấy câu trả lời."
+    
+    return best_match
+import re
+
+def extract_year(text):
+    match = re.search(r'\b(19\d{2}|20\d{2})\b', text) 
+    return match.group(0) if match else "Không tìm thấy năm"
+
+    import re
+
+def clean_response(text, query):
+    sentences = text.split(". ")  # Tách từng câu
+    relevant_sentences = [s for s in sentences if query.lower() in s.lower()]
+    
+    return ". ".join(relevant_sentences) if relevant_sentences else text  # Trả về nội dung liên quan nhất
+    
+    
+# ============= Giao diện Streamlit =============
+st.set_page_config(page_title="RAG System", layout="wide")
+
+st.title("CHATBOT RAG")
+
+# Khu vực tải file
+uploaded_file = st.file_uploader("📂 Upload your file:", type=["pdf", "txt"])
+if uploaded_file:
+    file_path = save_uploaded_file(uploaded_file)
+    st.success(f"✅ File '{uploaded_file.name}' đã được tải lên!")
+
+# Nút Load Data
+if st.button("🔄 Load Data"):
+    documents = load_documents()
+    chunks = split_documents(documents)
+    num_added = add_to_chroma(chunks)
+    st.success(f"✅ Đã thêm {num_added} đoạn văn bản vào ChromaDB!")
+
+# Khu vực nhập câu hỏi
+st.subheader("💬 Nhập câu hỏi:")
+user_input = st.text_area("Enter text:", "Bạn muốn hỏi gì?")
+
+if st.button("Submit"):
+    raw_result = search_with_faiss(user_input)
+    final_answer = clean_response(raw_result, user_input)
+    st.write("💡 **Câu trả lời:**", final_answer)
